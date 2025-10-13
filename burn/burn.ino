@@ -2,7 +2,7 @@
 
 // Set this to 1 ONLY when you are absolutely sure you want to permanently
 // burn the settings into the sensor's OTP memory.
-#define BURN_ENABLED 1
+#define BURN_ENABLED 0
 
 // AS5600 I2C Address
 const int AS5600_ADDR = 0x36;
