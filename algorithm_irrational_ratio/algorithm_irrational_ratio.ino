@@ -38,10 +38,17 @@ struct can_frame canMsg1;
 #define CAN_CS_PIN 53
 MCP2515 mcp2515(CAN_CS_PIN);
 
-#define integralCap 100
+// #define integralCap 100
 
-PIDController inner_motor_pid(0.7 , 0, 0, integralCap);
-PIDController outer_motor_pid(0.01, 0.05, 0, integralCap); // 0.4, 0.05, 0
+// for PURE RPM
+// PIDController inner_motor_pid(0.7 , 0, 0, integralCap);
+// PIDController outer_motor_pid(0.01, 0.05, 0, integralCap); // 0.4, 0.05, 0
+
+#define MAX_CURRENT_AMPS 10.0
+#define integralCap MAX_CURRENT_AMPS
+// for CURRENT CONTROL
+PIDController inner_motor_pid(0.001, 0, 0, integralCap); 
+PIDController outer_motor_pid(0.001, 0, 0, integralCap);
 
 struct Motor {
   int16_t position;
@@ -74,6 +81,7 @@ enum {
 
 void printMotor(Motor m, char c = '?');
 void setVelocity(uint8_t controller_id, float velocity_rpm);
+void setCurrent(uint8_t controller_id, float current);
 void setAngle(uint8_t controller_id, float velocity_rpm, float angle_deg, float RPA);
 
 Motor motorA;
@@ -103,11 +111,11 @@ int changeDT_sBRW = 300;
 int send_interval = 5;
 int print_interval = 50;
 
-float inner_desired = 0;
-float inner_current = 0;
+float inner_velocity_desired = 0;
+float inner_velocity_current = 0;
 float inner_pid_output = 0;
-float outer_desired = 0;
-float outer_current = 0;
+float outer_velocity_desired = 0;
+float outer_velocity_current = 0;
 float outer_pid_output = 0;
 
 
@@ -260,8 +268,8 @@ void loop() {
       // // printMotor(motorA,'a');
       // // printMotor(motorB,'b');
 
-      inner_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
-      outer_desired = MAX_VELO_RPM * GEAR_RATIO;
+      inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
+      outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
       // VELOCITY WILL BE SET IN A SEPERATE LOOP
       
       digitalWrite(LED_PIN, HIGH);
@@ -273,14 +281,16 @@ void loop() {
     elapsed_time_send = current_time - prev_time_send;
     if (elapsed_time_send >= send_interval) {
       prev_time_send = current_time;
-      inner_current = motors[0].speed * 10.0f; // eRPM pregearbox
-      outer_current = motors[1].speed * 10.0f;
-      inner_pid_output = inner_motor_pid.compute(inner_desired, inner_current);
-      outer_pid_output = outer_motor_pid.compute(outer_desired, outer_current);
-      setVelocity(0x64, inner_desired);
-      setVelocity(0x0A, outer_desired);
+      inner_velocity_current = motors[0].speed * 10.0f; // eRPM pregearbox
+      outer_velocity_current = motors[1].speed * 10.0f;
+      inner_pid_output = inner_motor_pid.compute(inner_velocity_desired, inner_velocity_current);
+      outer_pid_output = outer_motor_pid.compute(outer_velocity_desired, outer_velocity_current);
+      // setVelocity(0x64, inner_velocity_desired);
+      // setVelocity(0x0A, outer_velocity_desired);
+      setCurrent(0x64, inner_pid_output);
+      setCurrent(0x0A, outer_pid_output);
       // setVelocity(0x64, 0);
-      // setVelocity(0x0A, outer_current + outer_pid_output);
+      // setVelocity(0x0A, outer_velocity_current + outer_pid_output);
     }
 
   }
@@ -296,7 +306,7 @@ void loop() {
     Serial.print(" ");
     Serial.print(inner_pid_output);
     Serial.print(" ");
-    Serial.print(outer_desired);
+    Serial.print(outer_velocity_desired);
     Serial.print(" ");
     Serial.print(outer_pid_output);
     Serial.print(" ");
@@ -319,11 +329,29 @@ void loop() {
 //   Serial.println(m.temp);
 // }
 
+
+// The speed value is of int32 type, and the range -100000 to 100000 represents -100000 to 100000 electrical RPM
 void setVelocity(uint8_t controller_id, float velocity_rpm){
     int32_t send_index = 0;
     uint8_t buffer[4];
     buffer_append_int32(buffer, (int32_t)velocity_rpm, &send_index);
     comm_can_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_SET_RPM << 8), buffer, send_index);
+}
+
+// The current value is of int32 type, and the values -60000 to 60000 represent -60 to 60 A
+void setCurrent(uint8_t controller_id, float current) {
+    // Clamp for safety (for initial tests)
+    if (current > 10.0) {
+      current = 10.0;
+    }
+    if (current < -10.0) {
+      current = -10.0;
+    }
+
+    int32_t send_index = 0;
+    uint8_t buffer[4];
+    buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
+    comm_can_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_SET_CURRENT << 8), buffer, send_index);
 }
 
 void setAngleSingle(uint8_t controller_id, float velocity_rpm, float angle_deg, float RPA){
