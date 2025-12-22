@@ -1,17 +1,13 @@
 /*
-  CAN Send Example
-
-  This will setup the CAN controller(MCP2515) to send CAN frames.
-  Transmitted frames will be printed to the Serial port.
-  Transmits a CAN standard frame every 2 seconds.
-
-  MIT License
-  https://github.com/codeljo/AA_MCP2515
+  This uses autowp-mcp2515 library v1.3.1 from Arduino Libarary
 */
 
+#include "mcp2515.h"
 // radio stuffs
 #include <SPI.h>
 #include "RF24.h"
+#include "PIDController.h"
+
 #define CE_PIN 7
 #define CSN_PIN 8
 
@@ -26,31 +22,26 @@ RF24 radio(CE_PIN, CSN_PIN);
 
 int PWMpin = 5;  // connect AS5600 OUT pin here
 
-#define MAX_VELO_RPM 15
+#define MAX_VELO_RPM_MECHANICAL 15 // change this for max RPM
+#define POLE_PAIRS 14
+
+#define MAX_VELO_RPM MAX_VELO_RPM_MECHANICAL*POLE_PAIRS // desired electrical RPM to be sent (post-gearbox);
+
 #define GEAR_RATIO 6
 #define ACCEL_RAD_S_S 0.2
 #define DT_MS 300
 #define ANGLE_OF_ATTACK 15
 #define SEED 2132138
 
-#define EN_CAN 0
-
-#include "mcp2515.h"
 struct can_frame canMsg;
 struct can_frame canMsg1;
 #define CAN_CS_PIN 53
 MCP2515 mcp2515(CAN_CS_PIN);
 
+#define integralCap 100
 
-#define TIMING_CYCLE 100
-#define TIMING_TOLERANCE 10
-
-#define SERIAL_TIMING 0
-#define COMMAND_TIMING 20
-#define QUERY_TIMING 40
-#define PRINT_TIMING 80
-
-#define DT_CYCLES DT_MS/TIMING_CYCLE
+PIDController inner_motor_pid(0.7 , 0, 0, integralCap);
+PIDController outer_motor_pid(0.01, 0.05, 0, integralCap); // 0.4, 0.05, 0
 
 struct Motor {
   int16_t position;
@@ -70,8 +61,6 @@ struct Motor {
     7: motor lock-up
   */
 };
-
-
 
 enum {
     CAN_PACKET_SET_DUTY = 0,
@@ -94,32 +83,33 @@ Motor motors[2] = {motorA, motorB};
 
 double heading = 0;
 
-// String inst;
-
-int commandLoop = 0;
-int printLoopCount = 0;
-
-const char endCharA = 'A';
-const char endCharB = 'B';
-const char purge = '_';
-
 float valueA = 0;
 float valueB = 0;
 
-int pointCount = 0;
-
 char mode = 'm';
-
-bool serialRead = 0;
-bool commandSent = 0;
-bool querySent = 0;
-bool imuRecv = 0;
-bool printSent = 0;
 
 // for CAN recieve
 uint32_t id;
 uint8_t data[8];
 uint8_t len;
+
+uint32_t elapsed_time_send = 0;
+uint32_t elapsed_time_sBRW = 0;
+uint32_t elapsed_time_print = 0;
+uint32_t prev_time_sBRW = 0;
+uint32_t prev_time_send = 0;
+uint32_t prev_time_print = 0;
+int changeDT_sBRW = 300;
+int send_interval = 5;
+int print_interval = 50;
+
+float inner_desired = 0;
+float inner_current = 0;
+float inner_pid_output = 0;
+float outer_desired = 0;
+float outer_current = 0;
+float outer_pid_output = 0;
+
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
     canMsg1.can_id = CAN_EFF_FLAG + id;
@@ -167,6 +157,7 @@ void buffer_append_int16(uint8_t *buffer, int16_t number, int32_t *index) {
 }
 
 const uint8_t can_test[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
+
 void setup() {
   Serial.begin(115200);
 
@@ -188,15 +179,15 @@ void setup() {
 
   digitalWrite(CAN_CS_PIN, HIGH); // De-select the CAN controller
   //radio 
-  if (!radio.begin()) {
-     Serial.println(F("radio hardware is not responding!!"));
-     while (1) {}  // hold in infinite loop
-  } else {
-    Serial.println("radio good");
-  }
-  radio.setPALevel(RF24_PA_LOW);
-  radio.openReadingPipe(1, address);
-  radio.startListening();
+  // if (!radio.begin()) {
+  //    Serial.println(F("radio hardware is not responding!!"));
+  //    while (1) {}  // hold in infinite loop
+  // } else {
+  //   Serial.println("radio good");
+  // }
+  // radio.setPALevel(RF24_PA_LOW);
+  // radio.openReadingPipe(1, address);
+  // radio.startListening();
 
   pinMode(LED_PIN, OUTPUT);
 
@@ -207,174 +198,112 @@ void setup() {
 
 
 void loop() {
-  // grab inner angle
-  if (radio.available()) {
-    radio.read(&payload, sizeof(payload));
-    Serial.print("Received: ");
-    inner_angle_ticks = payload[0];
-    Serial.print("inner: ");
-    Serial.println(inner_angle_ticks);
-  }
 
-  // grab outer angle
-  uint16_t outer_angle_ticks = measureTicks();
-  if (outer_angle_ticks != 0xFFFF) {
-    // Print confirmation to Serial Monitor for debugging
-      Serial.print("outer: ");
-      Serial.println(outer_angle_ticks);
-  }
-
-  
-  long time = millis();
-  int cyclePosition = time%TIMING_CYCLE;
-
-  if(cyclePosition > SERIAL_TIMING && cyclePosition <= SERIAL_TIMING + TIMING_TOLERANCE){
-    if(Serial.available()){
-      char inChar = Serial.read();
-      // Serial.println("--");
-      // Serial.println(inChar);
-      // Serial.println((int)inChar);
-      // Serial.println("--");
-      if(inChar >= 48 && inChar <= 57){
-        // inst += inChar;
-      }else if(inChar == 'p'){
-        mode = 'p';
-        // setCurrent(0x141,0);
-        // setCurrent(0x142,0);
-      }else if(inChar == 'a'){
-        mode = 'a';
-        // setCurrent(0x141,0);
-        // setCurrent(0x142,0);
-      }else if(inChar == 'v'){
-        mode = 'v';
-        // setCurrent(0x141,0);
-        // setCurrent(0x142,0);
-      }else if(inChar == 'r'){
-        mode = ' ';
-        // setCurrent(0x141,0);
-        // setCurrent(0x142,0);
-      }else if(mode == 'p' && inChar == endCharA){
-        // valueA = atof(inst.c_str());
-        // setAngleSingle(0x141,MAX_VELO_RPM,(int16_t)(valueA*100));
-        // inst = "";
-      }else if(mode == 'p' && inChar == endCharB){
-        // valueB = atof(inst.c_str());
-        // setAngleSingle(0x142,MAX_VELO_RPM,(int16_t)(valueB*100));
-        // inst = "";
-      }else if(mode == 'v' && inChar == endCharA){
-        // valueA = atof(inst.c_str());
-        // setVelocity(0x141,(int32_t)(valueA*100));
-        // inst = "";
-      }else if(mode == 'v' && inChar == endCharB){
-        // valueB = atof(inst.c_str());
-        // setVelocity(0x142,(int32_t)(valueB*100));
-        // inst = "";
-      }else if(inChar == purge){
-        // inst = "";
-      }else if(inChar == 'd'){
-        Serial.print("#");
-        Serial.print(motors[0].position);
-        Serial.print("=");
-        Serial.print(motors[1].position);
-        Serial.print("=");
-        // Serial.print(motors[0].speed);
-        // Serial.print("=");
-        // Serial.print(motors[1].speed);
-        // Serial.print("=");
-        Serial.print(motors[0].temp);
-        Serial.println("=");
-        // Serial.print(motors[1].temp);
-        // Serial.print("=");
-      }
-    }
-  }else if(cyclePosition > COMMAND_TIMING && cyclePosition <= COMMAND_TIMING + TIMING_TOLERANCE){
-    if(!commandSent){
-      if(mode == 'a'){
-        if(commandLoop > DT_CYCLES){
-          heading += (random(65536)/65536.0) * ANGLE_OF_ATTACK - (ANGLE_OF_ATTACK/2);
-          double heading_rad = atan2(3.14159265358979,exp(1));
-          setVelocity(0x64,sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO);
-          setVelocity(0x0A,cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO);
-          // printMotor(motorA,'a');
-          // printMotor(motorB,'b');
-          commandLoop = 0;
-          pointCount ++;
-          digitalWrite(LED_PIN, HIGH);
-        }else{
-          digitalWrite(LED_PIN, LOW);
-        }
-        commandLoop ++;
-
-      }
-      
-      commandSent = 1;
-    }
-  }else if(cyclePosition > QUERY_TIMING && cyclePosition <= QUERY_TIMING + TIMING_TOLERANCE){
-    if(!querySent){
-      querySent = 1;
-    }
-  }else if(cyclePosition > PRINT_TIMING && cyclePosition <= PRINT_TIMING + TIMING_TOLERANCE){
-    if(!printSent){
-      if(printLoopCount > 1){
-
-        double heading_rad = heading * 3.14159 / 180;
-        // Serial.print("Heading:");
-        // Serial.print(heading_rad);
-        // Serial.print(" A Des:[");
-        // Serial.print(sin(heading_rad)*MAX_VELO_RPM);
-        // Serial.print("] Act:[");
-        // Serial.print(motors[0].velocity/10.0);
-        // Serial.print("] B Des:");
-        // Serial.print(cos(heading_rad)*MAX_VELO_RPM);
-        // Serial.print("] Act:[");
-        // Serial.print(motors[1].velocity/10.0);
-
-        // Serial.print("[Immediate] [");
-        // Serial.print(accel.acceleration.x + xOffset);
-        // Serial.print("] [");
-        // Serial.print(accel.acceleration.y + yOffset);
-        // Serial.print("] [");
-        // Serial.print(accel.acceleration.z + zOffset);
-
-        // Serial.print("] [Integral G] X:");
-        // Serial.print(accelX);
-        // Serial.print(" Y:");
-        // Serial.print(accelY);
-        // Serial.print(" Z:");
-        // Serial.print(accelZ);
-
-        // Serial.print(" | PC:");
-        // Serial.println(pointCount);
-
-        printLoopCount = 0;
-      }
-      printLoopCount ++;
-      printSent = 1;
-    }
-  }else{
-    serialRead = 0;
-    commandSent = 0;
-    querySent = 0;
-    printSent = 0;
-  }
-  // if CAN message was successfully recieved, pass data into the motor struct
-  
   digitalWrite(CSN_PIN, HIGH);     // make sure radio is idle
+  // if CAN message was successfully recieved, pass data into the motor struct
   if (comm_can_recieve_eid(&id, data, &len)) {
-    // Serial.print("ID received: ");
-    // Serial.print(id, HEX);
-    // Serial.print("    len received: ");
-    // Serial.println(len);
     getFeedback();
+  }
+  // // grab inner angle
+  // if (radio.available()) {
+  //   radio.read(&payload, sizeof(payload));
+  //   Serial.print("Received: ");
+  //   inner_angle_ticks = payload[0];
+  //   Serial.print("inner: ");
+  //   Serial.println(inner_angle_ticks);
+  // }
+
+  // // grab outer angle
+  // uint16_t outer_angle_ticks = measureTicks();
+  // if (outer_angle_ticks != 0xFFFF) {
+  //   // Print confirmation to Serial Monitor for debugging
+  //     Serial.print("outer: ");
+  //     Serial.println(outer_angle_ticks);
+  // }
+
+  uint32_t current_time = millis();
+
+  if(Serial.available()){
+    char inChar = Serial.read();
+    if(inChar == 'a'){
+      mode = 'a';
+      inner_motor_pid.reset();
+      outer_motor_pid.reset();
+    }else if(inChar == 'r'){
+      mode = ' ';
+      inner_motor_pid.reset();
+      outer_motor_pid.reset();
+    }else if(inChar == 'd'){
+      Serial.print("#");
+      Serial.print(motors[0].position);
+      Serial.print("=");
+      Serial.print(motors[1].position);
+      Serial.print("=");
+      Serial.print(motors[0].speed);
+      Serial.print("=");
+      Serial.print(motors[1].speed);
+      Serial.print("=");
+      Serial.print(motors[0].temp);
+      Serial.print("=");
+      Serial.println(motors[1].temp);
+    }
+  }
+
+  if(mode == 'a'){
+    elapsed_time_sBRW = current_time - prev_time_sBRW;
+    if(elapsed_time_sBRW >= changeDT_sBRW){
+      prev_time_sBRW = current_time;
+      // heading += (random(65536)/65536.0) * ANGLE_OF_ATTACK - (ANGLE_OF_ATTACK/2);
+      // double heading_rad = atan2(3.14159265358979,exp(1));
+      // setVelocity(0x64,sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO);
+      // setVelocity(0x0A,cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO);
+      // // printMotor(motorA,'a');
+      // // printMotor(motorB,'b');
+
+      inner_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
+      outer_desired = MAX_VELO_RPM * GEAR_RATIO;
+      // VELOCITY WILL BE SET IN A SEPERATE LOOP
+      
+      digitalWrite(LED_PIN, HIGH);
+    }else{
+      digitalWrite(LED_PIN, LOW);
+    }
+
+    // sending is seperate from calculating speeds, for PID reasons
+    elapsed_time_send = current_time - prev_time_send;
+    if (elapsed_time_send >= send_interval) {
+      prev_time_send = current_time;
+      inner_current = motors[0].speed * 10.0f; // eRPM pregearbox
+      outer_current = motors[1].speed * 10.0f;
+      inner_pid_output = inner_motor_pid.compute(inner_desired, inner_current);
+      outer_pid_output = outer_motor_pid.compute(outer_desired, outer_current);
+      setVelocity(0x64, inner_desired);
+      setVelocity(0x0A, outer_desired);
+      // setVelocity(0x64, 0);
+      // setVelocity(0x0A, outer_current + outer_pid_output);
+    }
+
+  }
+
+  elapsed_time_print = current_time - prev_time_print;
+  if (elapsed_time_print >= print_interval) {
+    prev_time_print = current_time;
     float outer_angle = (float)((motors[1].position)*0.1f);
     float inner_angle = (float)((motors[0].position)*0.1f);
-    // Serial.print("#");
-    // Serial.print(inner_angle);
-    // Serial.print("=");
-    // Serial.print(outer_angle);
-    // Serial.println("=");
+    Serial.print((motors[0].speed * 10.0f)/(14.0f * 6));
+    Serial.print(" ");
+    Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
+    Serial.print(" ");
+    Serial.print(inner_pid_output);
+    Serial.print(" ");
+    Serial.print(outer_desired);
+    Serial.print(" ");
+    Serial.print(outer_pid_output);
+    Serial.print(" ");
+    Serial.print(outer_angle);
+    Serial.print(" ");
+    Serial.println(inner_angle);
   }
-
   delay(1);
 }
 
@@ -398,20 +327,6 @@ void setVelocity(uint8_t controller_id, float velocity_rpm){
 }
 
 void setAngleSingle(uint8_t controller_id, float velocity_rpm, float angle_deg, float RPA){
-    // uint8_t data[8] = { 
-    //     0xA6, 
-    //     0x00, 
-    //     (uint8_t)(velocity_dps), 
-    //     (uint8_t)(velocity_dps>>8), 
-    //     (uint8_t)(angle_deg_hundreth), 
-    //     (uint8_t)(angle_deg_hundreth>>8), 
-    //     0x00, 
-    //     0x00};
-
-    // // uint8_t data[8] = {0xA2, 0x00, 0x00, 0x00, 0x10, 0x27, 0x00, 0x00};
-    // CANFrame frame(canID, data, sizeof(data));
-    // // frame.print("TX");
-    // CAN.write(frame);
     int32_t send_index = 0;
     int32_t send_index1 = 4;
     uint8_t buffer[8];
@@ -420,23 +335,6 @@ void setAngleSingle(uint8_t controller_id, float velocity_rpm, float angle_deg, 
     buffer_append_int16(buffer, RPA / 10.0, &send_index1);
     comm_can_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_SET_POS_SPD << 8), buffer, send_index1);
 }
-
-// void setCurrent(uint16_t canID, int16_t current_hundreth){
-//     uint8_t data[8] = { 
-//         0xA1, 
-//         0x00, 
-//         0x00, 
-//         0x00, 
-//         (uint8_t)(current_hundreth), 
-//         (uint8_t)(current_hundreth>>8), 
-//         0x00, 
-//         0x00};
-
-//     // uint8_t data[8] = {0xA2, 0x00, 0x00, 0x00, 0x10, 0x27, 0x00, 0x00};
-//     CANFrame frame(canID, data, sizeof(data));
-//     // frame.print("TX");
-//     CAN.write(frame);
-// }
 
 void getFeedback(){
   uint8_t motor_id = id & 0xFF; // lower 8 bits
@@ -485,10 +383,6 @@ uint16_t measureTicks()
 
   return ticks;
 }
-
-
-
-
 
 
 
