@@ -1,5 +1,12 @@
 /*
   This uses autowp-mcp2515 library v1.3.1 from Arduino Libarary
+  Also uses PID by Brett Beauregard
+*/
+
+/*
+  Current Issues:
+  - 20ERPM gap that the PID controller cant close (possibly due to inability of setCurrent to do fine-grained control)
+  - Still some amount of noise on the angular velocity 
 */
 
 #include "mcp2515.h"
@@ -7,6 +14,8 @@
 #include <SPI.h>
 #include "RF24.h"
 #include "PIDController.h"
+
+#include <PID_v1.h>
 
 #define CE_PIN 7
 #define CSN_PIN 8
@@ -22,7 +31,8 @@ RF24 radio(CE_PIN, CSN_PIN);
 
 int PWMpin = 5;  // connect AS5600 OUT pin here
 
-#define MAX_VELO_RPM_MECHANICAL 15 // change this for max RPM
+
+#define MAX_VELO_RPM_MECHANICAL 5 // change this for max RPM
 #define POLE_PAIRS 14
 
 #define MAX_VELO_RPM MAX_VELO_RPM_MECHANICAL*POLE_PAIRS // desired electrical RPM to be sent (post-gearbox);
@@ -38,17 +48,15 @@ struct can_frame canMsg1;
 #define CAN_CS_PIN 53
 MCP2515 mcp2515(CAN_CS_PIN);
 
-// #define integralCap 100
 
-// for PURE RPM
-// PIDController inner_motor_pid(0.7 , 0, 0, integralCap);
-// PIDController outer_motor_pid(0.01, 0.05, 0, integralCap); // 0.4, 0.05, 0
+#define MAX_CURRENT_AMPS 3.0 // rated working amps
 
-#define MAX_CURRENT_AMPS 10.0
-#define integralCap MAX_CURRENT_AMPS
-// for CURRENT CONTROL
-PIDController inner_motor_pid(0.001, 0, 0, integralCap); 
-PIDController outer_motor_pid(0.001, 0, 0, integralCap);
+/* Low Pass Filter Variables for PID Input and Output */
+const float alpha = 0.025; // Smoothing factor (adjust as needed)
+double filteredVeloOuter = 0;
+double filteredVeloInner = 0;
+double filteredCurrOuter = 0;
+double filteredCurrInner = 0;
 
 struct Motor {
   int16_t position;
@@ -101,6 +109,7 @@ uint32_t id;
 uint8_t data[8];
 uint8_t len;
 
+/* Bounded Random Walk Variables*/
 uint32_t elapsed_time_send = 0;
 uint32_t elapsed_time_sBRW = 0;
 uint32_t elapsed_time_print = 0;
@@ -108,15 +117,21 @@ uint32_t prev_time_sBRW = 0;
 uint32_t prev_time_send = 0;
 uint32_t prev_time_print = 0;
 int changeDT_sBRW = 300;
-int send_interval = 5;
+int send_interval = 1;
 int print_interval = 50;
 
-float inner_velocity_desired = 0;
-float inner_velocity_current = 0;
-float inner_pid_output = 0;
-float outer_velocity_desired = 0;
-float outer_velocity_current = 0;
-float outer_pid_output = 0;
+/* Current Control PID variables */
+double inner_velocity_desired = 0;
+double inner_velocity_reading = 0;
+double inner_pid_output = 0;
+double outer_velocity_desired = 0;
+double outer_velocity_reading = 0;
+double outer_pid_output = 0;
+
+// Specify the links and initial tuning parameters
+double Kp=0.04, Ki=0.0001, Kd=0;
+PID outerPID(&outer_velocity_reading, &outer_pid_output, &outer_velocity_desired, Kp, Ki, Kd, DIRECT); // input, output, setpoint
+PID innerPID(&inner_velocity_reading, &inner_pid_output, &inner_velocity_desired, Kp, 0.01, Kd, DIRECT); // input, output, setpoint
 
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
@@ -167,6 +182,14 @@ void buffer_append_int16(uint8_t *buffer, int16_t number, int32_t *index) {
 const uint8_t can_test[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
 
 void setup() {
+  outerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
+  outerPID.SetMode(AUTOMATIC);
+  outerPID.SetSampleTime(1); // sets the frequency, in Milliseconds with which the PID calculation is performed
+  
+  innerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
+  innerPID.SetMode(AUTOMATIC);
+  innerPID.SetSampleTime(1); // sets the frequency, in Milliseconds with which the PID calculation is performed
+
   Serial.begin(115200);
 
     // --- ADD THIS BLOCK ---
@@ -209,7 +232,12 @@ void loop() {
 
   digitalWrite(CSN_PIN, HIGH);     // make sure radio is idle
   // if CAN message was successfully recieved, pass data into the motor struct
-  if (comm_can_recieve_eid(&id, data, &len)) {
+  // if (comm_can_recieve_eid(&id, data, &len)) {
+  //   getFeedback();
+  // }
+
+  // Drain the CAN buffer completely so we use the freshest data for PID
+  while (comm_can_recieve_eid(&id, data, &len)) {
     getFeedback();
   }
   // // grab inner angle
@@ -235,12 +263,26 @@ void loop() {
     char inChar = Serial.read();
     if(inChar == 'a'){
       mode = 'a';
-      inner_motor_pid.reset();
-      outer_motor_pid.reset();
+      
+      /* PID reset */
+      outerPID.SetOutputLimits(0.0, 1.0);  // Forces minimum up to 0.0
+      outerPID.SetOutputLimits(-1.0, 0.0);  // Forces maximum down to 0.0
+      outerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
+      innerPID.SetOutputLimits(0.0, 1.0);  // Forces minimum up to 0.0
+      innerPID.SetOutputLimits(-1.0, 0.0);  // Forces maximum down to 0.0
+      innerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
     }else if(inChar == 'r'){
       mode = ' ';
-      inner_motor_pid.reset();
-      outer_motor_pid.reset();
+      setCurrent(0x64, 0);
+      setCurrent(0x0A, 0);
+
+      /* PID reset */
+      outerPID.SetOutputLimits(0.0, 1.0);  // Forces minimum up to 0.0
+      outerPID.SetOutputLimits(-1.0, 0.0);  // Forces maximum down to 0.0
+      outerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
+      innerPID.SetOutputLimits(0.0, 1.0);  // Forces minimum up to 0.0
+      innerPID.SetOutputLimits(-1.0, 0.0);  // Forces maximum down to 0.0
+      innerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
     }else if(inChar == 'd'){
       Serial.print("#");
       Serial.print(motors[0].position);
@@ -281,16 +323,53 @@ void loop() {
     elapsed_time_send = current_time - prev_time_send;
     if (elapsed_time_send >= send_interval) {
       prev_time_send = current_time;
-      inner_velocity_current = motors[0].speed * 10.0f; // eRPM pregearbox
-      outer_velocity_current = motors[1].speed * 10.0f;
-      inner_pid_output = inner_motor_pid.compute(inner_velocity_desired, inner_velocity_current);
-      outer_pid_output = outer_motor_pid.compute(outer_velocity_desired, outer_velocity_current);
+      inner_velocity_reading = motors[0].speed * 10.0f; // eRPM pregearbox
+      outer_velocity_reading = motors[1].speed * 10.0f;
+
+      filteredVeloOuter = alpha * outer_velocity_reading + (1-alpha) * filteredVeloOuter;
+      filteredVeloInner = alpha * inner_velocity_reading + (1-alpha) * filteredVeloInner;
+
+      outer_velocity_reading = filteredVeloOuter;
+      inner_velocity_reading = filteredVeloInner;
+
+      // // --- PROFILER START ---
+      // static unsigned long profileLastTime = 0;
+      // static long profileCount = 0;
+
+      // profileCount++;
+
+      // // Update every 1000ms (1 second)
+      // if (millis() - profileLastTime >= 1000) {
+      //     // Calculate frequency
+      //     float loopFreq = (float)profileCount; 
+      //     // Calculate average period in microseconds
+      //     float loopPeriod = 1000000.0 / loopFreq; 
+
+      //     Serial.print("Loop Freq: ");
+      //     Serial.print(loopFreq);
+      //     Serial.print(" Hz  |  Avg Period: ");
+      //     Serial.print(loopPeriod);
+      //     Serial.println(" us");
+
+      //     profileCount = 0;
+      //     profileLastTime = millis();
+      // }
+      // // --- PROFILER END ---
+
+
+      outerPID.Compute(); // library takes care of it
+      innerPID.Compute();
+      filteredCurrOuter = alpha * outer_pid_output + (1-alpha) * filteredCurrOuter;
+      filteredCurrInner = alpha * inner_pid_output + (1-alpha) * filteredCurrInner;
+
+      outer_pid_output = filteredCurrOuter;
+      inner_pid_output = filteredCurrInner;
+
       // setVelocity(0x64, inner_velocity_desired);
       // setVelocity(0x0A, outer_velocity_desired);
-      setCurrent(0x64, inner_pid_output);
-      setCurrent(0x0A, outer_pid_output);
-      // setVelocity(0x64, 0);
-      // setVelocity(0x0A, outer_velocity_current + outer_pid_output);
+      setCurrent(0x0A, outer_pid_output); // using outerPID
+      setCurrent(0x0A, 0); // using outerPID
+      setCurrent(0x64, inner_pid_output); // using innerPID
     }
 
   }
@@ -300,21 +379,32 @@ void loop() {
     prev_time_print = current_time;
     float outer_angle = (float)((motors[1].position)*0.1f);
     float inner_angle = (float)((motors[0].position)*0.1f);
-    Serial.print((motors[0].speed * 10.0f)/(14.0f * 6));
+    // Serial.print((motors[0].speed * 10.0f)/(14.0f * 6));
+    // Serial.print(" ");
+    // Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
+    Serial.print(current_time);
     Serial.print(" ");
-    Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
+    Serial.print(motors[1].speed * 10.0f);
     Serial.print(" ");
-    Serial.print(inner_pid_output);
+    Serial.print(outer_velocity_reading);
     Serial.print(" ");
     Serial.print(outer_velocity_desired);
     Serial.print(" ");
-    Serial.print(outer_pid_output);
+    Serial.print(outer_pid_output); // commanded current
     Serial.print(" ");
-    Serial.print(outer_angle);
+    Serial.print((motors[1].current * 0.01f));
     Serial.print(" ");
-    Serial.println(inner_angle);
+    Serial.print(motors[0].speed * 10.0f);
+    Serial.print(" ");
+    Serial.print(inner_velocity_reading);
+    Serial.print(" ");
+    Serial.print(inner_velocity_desired);
+    Serial.print(" ");
+    Serial.print(inner_pid_output); // commanded current
+    Serial.print(" ");
+    Serial.println((motors[0].current * 0.01f));
   }
-  delay(1);
+  // delay(1);
 }
 
 
@@ -341,11 +431,11 @@ void setVelocity(uint8_t controller_id, float velocity_rpm){
 // The current value is of int32 type, and the values -60000 to 60000 represent -60 to 60 A
 void setCurrent(uint8_t controller_id, float current) {
     // Clamp for safety (for initial tests)
-    if (current > 10.0) {
-      current = 10.0;
+    if (current > 5.0) {
+      current = 5.0;
     }
-    if (current < -10.0) {
-      current = -10.0;
+    if (current < -5.0) {
+      current = -5.0;
     }
 
     int32_t send_index = 0;
