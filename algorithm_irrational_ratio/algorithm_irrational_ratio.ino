@@ -1,21 +1,33 @@
 /*
-  This uses autowp-mcp2515 library v1.3.1 from Arduino Libarary
-  Also uses PID by Brett Beauregard
+  This file contains the motor control for the Random Positioning Machine 2.0
+*/
+
+/*
+  Libraries:
+  autowp-mcp2515 library v1.3.1 from Arduino Libarary
+  PID by Brett Beauregard
+  RF24 by TMRh20
 */
 
 /*
   Current Issues:
-  - 20ERPM gap that the PID controller cant close (possibly due to inability of setCurrent to do fine-grained control)
-  - Still some amount of noise on the angular velocity 
+  - Gap between desired RPM and RPM reading that the PID controller cant close (possibly due to inability of setCurrent to do fine-grained control, or weight imbalances)
+  - Still some amount of noise on the angular velocity reading
+*/
+
+/*
+  TODO:
+  - Make new version of printMotor
+  - Verify radio connection for encoder
+  - Clean up variables for different algorithms
+  - Create enum for different algorithms like RPM 1.0
 */
 
 #include "mcp2515.h"
+#include <PID_v1.h>
 // radio stuffs
 #include <SPI.h>
 #include "RF24.h"
-#include "PIDController.h"
-
-#include <PID_v1.h>
 
 #define CE_PIN 7
 #define CSN_PIN 8
@@ -31,13 +43,12 @@ RF24 radio(CE_PIN, CSN_PIN);
 
 int PWMpin = 5;  // connect AS5600 OUT pin here
 
-
 #define MAX_VELO_RPM_MECHANICAL 5 // change this for max RPM
 #define POLE_PAIRS 14
-
 #define MAX_VELO_RPM MAX_VELO_RPM_MECHANICAL*POLE_PAIRS // desired electrical RPM to be sent (post-gearbox);
-
 #define GEAR_RATIO 6
+
+/* Simplified Bounded Random Walk Constants*/
 #define ACCEL_RAD_S_S 0.2
 #define DT_MS 300
 #define ANGLE_OF_ATTACK 15
@@ -47,7 +58,6 @@ struct can_frame canMsg;
 struct can_frame canMsg1;
 #define CAN_CS_PIN 53
 MCP2515 mcp2515(CAN_CS_PIN);
-
 
 #define MAX_CURRENT_AMPS 3.0 // rated working amps
 
@@ -92,15 +102,10 @@ void setVelocity(uint8_t controller_id, float velocity_rpm);
 void setCurrent(uint8_t controller_id, float current);
 void setAngle(uint8_t controller_id, float velocity_rpm, float angle_deg, float RPA);
 
-Motor motorA;
-Motor motorB;
+Motor motorInner;
+Motor motorOuter;
 
-Motor motors[2] = {motorA, motorB};
-
-double heading = 0;
-
-float valueA = 0;
-float valueB = 0;
+Motor motors[2] = {motorInner, motorOuter}; // This is creating copies, should fix
 
 char mode = 'm';
 
@@ -109,7 +114,8 @@ uint32_t id;
 uint8_t data[8];
 uint8_t len;
 
-/* Bounded Random Walk Variables*/
+/* Simplified Bounded Random Walk Variables*/
+double heading = 0;
 uint32_t elapsed_time_send = 0;
 uint32_t elapsed_time_sBRW = 0;
 uint32_t elapsed_time_print = 0;
@@ -129,9 +135,10 @@ double outer_velocity_reading = 0;
 double outer_pid_output = 0;
 
 // Specify the links and initial tuning parameters
-double Kp=0.04, Ki=0.0001, Kd=0;
-PID outerPID(&outer_velocity_reading, &outer_pid_output, &outer_velocity_desired, Kp, Ki, Kd, DIRECT); // input, output, setpoint
-PID innerPID(&inner_velocity_reading, &inner_pid_output, &inner_velocity_desired, Kp, 0.01, Kd, DIRECT); // input, output, setpoint
+double Kpouter=0.04, Kiouter=0.0001, Kdouter=0;
+double Kpinner=0.02, Kiinner=0.001, Kdinner=0;
+PID outerPID(&outer_velocity_reading, &outer_pid_output, &outer_velocity_desired, Kpouter, Kiouter, Kdouter, DIRECT); // input, output, setpoint
+PID innerPID(&inner_velocity_reading, &inner_pid_output, &inner_velocity_desired, Kpinner, Kiinner, Kdinner, DIRECT); // input, output, setpoint 
 
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
@@ -259,6 +266,7 @@ void loop() {
 
   uint32_t current_time = millis();
 
+  /* read in commands from serial monitor */
   if(Serial.available()){
     char inChar = Serial.read();
     if(inChar == 'a'){
@@ -299,20 +307,20 @@ void loop() {
     }
   }
 
+  /* begin running the algorithm */
   if(mode == 'a'){
     elapsed_time_sBRW = current_time - prev_time_sBRW;
     if(elapsed_time_sBRW >= changeDT_sBRW){
       prev_time_sBRW = current_time;
-      // heading += (random(65536)/65536.0) * ANGLE_OF_ATTACK - (ANGLE_OF_ATTACK/2);
+      heading += (random(65536)/65536.0) * ANGLE_OF_ATTACK - (ANGLE_OF_ATTACK/2);
       // double heading_rad = atan2(3.14159265358979,exp(1));
-      // setVelocity(0x64,sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO);
-      // setVelocity(0x0A,cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO);
-      // // printMotor(motorA,'a');
-      // // printMotor(motorB,'b');
+      double heading_rad = heading * 3.14159 / 180;
 
-      inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
-      outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
-      // VELOCITY WILL BE SET IN A SEPERATE LOOP
+      inner_velocity_desired = sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO; // eRPM pregearbox
+      outer_velocity_desired = cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO;
+
+      // inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
+      // outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
       
       digitalWrite(LED_PIN, HIGH);
     }else{
@@ -332,48 +340,25 @@ void loop() {
       outer_velocity_reading = filteredVeloOuter;
       inner_velocity_reading = filteredVeloInner;
 
-      // // --- PROFILER START ---
-      // static unsigned long profileLastTime = 0;
-      // static long profileCount = 0;
-
-      // profileCount++;
-
-      // // Update every 1000ms (1 second)
-      // if (millis() - profileLastTime >= 1000) {
-      //     // Calculate frequency
-      //     float loopFreq = (float)profileCount; 
-      //     // Calculate average period in microseconds
-      //     float loopPeriod = 1000000.0 / loopFreq; 
-
-      //     Serial.print("Loop Freq: ");
-      //     Serial.print(loopFreq);
-      //     Serial.print(" Hz  |  Avg Period: ");
-      //     Serial.print(loopPeriod);
-      //     Serial.println(" us");
-
-      //     profileCount = 0;
-      //     profileLastTime = millis();
-      // }
-      // // --- PROFILER END ---
-
-
-      outerPID.Compute(); // library takes care of it
+      outerPID.Compute(); 
       innerPID.Compute();
+
       filteredCurrOuter = alpha * outer_pid_output + (1-alpha) * filteredCurrOuter;
       filteredCurrInner = alpha * inner_pid_output + (1-alpha) * filteredCurrInner;
 
-      outer_pid_output = filteredCurrOuter;
-      inner_pid_output = filteredCurrInner;
+      /* Commented out filter on output to prevent lag on PID Controller*/
+      // outer_pid_output = filteredCurrOuter;
+      // inner_pid_output = filteredCurrInner;
 
       // setVelocity(0x64, inner_velocity_desired);
       // setVelocity(0x0A, outer_velocity_desired);
       setCurrent(0x0A, outer_pid_output); // using outerPID
-      setCurrent(0x0A, 0); // using outerPID
       setCurrent(0x64, inner_pid_output); // using innerPID
     }
 
   }
 
+  /* Limit frequency of prints */
   elapsed_time_print = current_time - prev_time_print;
   if (elapsed_time_print >= print_interval) {
     prev_time_print = current_time;
@@ -384,19 +369,19 @@ void loop() {
     // Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
     Serial.print(current_time);
     Serial.print(" ");
-    Serial.print(motors[1].speed * 10.0f);
+    Serial.print(motors[1].speed * 10.0f); // raw reading
     Serial.print(" ");
-    Serial.print(outer_velocity_reading);
+    Serial.print(outer_velocity_reading); // filtered reading
     Serial.print(" ");
     Serial.print(outer_velocity_desired);
     Serial.print(" ");
     Serial.print(outer_pid_output); // commanded current
     Serial.print(" ");
     Serial.print((motors[1].current * 0.01f));
+    Serial.print(" | ");
+    Serial.print(motors[0].speed * 10.0f); // raw reading
     Serial.print(" ");
-    Serial.print(motors[0].speed * 10.0f);
-    Serial.print(" ");
-    Serial.print(inner_velocity_reading);
+    Serial.print(inner_velocity_reading); // filtered reading
     Serial.print(" ");
     Serial.print(inner_velocity_desired);
     Serial.print(" ");
@@ -475,7 +460,7 @@ void getFeedback(){
   }
 }
 
-
+// For AS5600 PWM reading
 uint16_t measureTicks()
 {
   // Measure HIGH and LOW pulse durations in microseconds
@@ -501,47 +486,3 @@ uint16_t measureTicks()
 
   return ticks;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// #include <SPI.h>
-// #include "RF24.h"
-
-// RF24 radio(7, 8); // CE, CSN
-// const byte address[] = "2Node";
-
-// void setup() {
-//   Serial.begin(115200);
-//   if (!radio.begin()) {
-//      Serial.println(F("radio hardware is not responding!!"));
-//      while (1) {}  // hold in infinite loop
-//   }
-//   radio.setPALevel(RF24_PA_LOW);
-//   radio.openReadingPipe(1, address);
-//   radio.startListening();
-//   Serial.println("--- Simple Receiver Started ---");
-//   radio.printDetails(); // Check the output of this!
-// }
-
-// void loop() {
-//   if (radio.available()) {
-//     uint16_t message = 0;
-//     radio.read(&message, sizeof(message));
-//     Serial.print("Received: ");
-//     Serial.println(message);
-//   }
-// }
