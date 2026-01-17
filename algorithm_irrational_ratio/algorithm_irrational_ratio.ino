@@ -1,5 +1,20 @@
 /*
   This file contains the motor control for the Random Positioning Machine 2.0
+  ---------------------------------------------------------------------------
+  Standard Operating Procedure:
+  The default profile is MOTOR_SIMPLIFIED_RANDOM
+  If you want to change the profile, just enter the number corresponding to the profile you desire into the serial monitor
+    0 - MOTOR_BOTH_OFF         
+    1 - MOTOR_SIMPLIFIED_RANDOM, 
+    2 - MOTOR_2D_CLINOSTAT, 
+    3 - MOTOR_3D_CLINOSTAT,
+    4 - MOTOR_IRRATIONAL,
+    5 - MOTOR_CYCLOIDAL,
+    6 - MOTOR_BRW
+  Enter a to start your selected profile
+  Enter r to end the profile
+  You can only switch profiles once you've ended your current profile
+  For best practice please wait for the motors to settle before starting a profile
 */
 
 /*
@@ -20,7 +35,6 @@
   - Make new version of printMotor
   - Verify radio connection for encoder
   - Clean up variables for different algorithms
-  - Create enum for different algorithms like RPM 1.0
 */
 
 #include "mcp2515.h"
@@ -43,7 +57,7 @@ RF24 radio(CE_PIN, CSN_PIN);
 
 int PWMpin = 5;  // connect AS5600 OUT pin here
 
-#define MAX_VELO_RPM_MECHANICAL 5 // change this for max RPM
+#define MAX_VELO_RPM_MECHANICAL 10 // change this for max RPM
 #define POLE_PAIRS 14
 #define MAX_VELO_RPM MAX_VELO_RPM_MECHANICAL*POLE_PAIRS // desired electrical RPM to be sent (post-gearbox);
 #define GEAR_RATIO 6
@@ -54,19 +68,16 @@ int PWMpin = 5;  // connect AS5600 OUT pin here
 #define ANGLE_OF_ATTACK 15
 #define SEED 2132138
 
+/* Cycloidal Constants*/
+#define CYCLOIDAL_TIME_PER_ROTATION 600000L
+double velo_angle = 0;
+
 struct can_frame canMsg;
 struct can_frame canMsg1;
 #define CAN_CS_PIN 53
 MCP2515 mcp2515(CAN_CS_PIN);
 
 #define MAX_CURRENT_AMPS 3.0 // rated working amps
-
-/* Low Pass Filter Variables for PID Input and Output */
-const float alpha = 0.025; // Smoothing factor (adjust as needed)
-double filteredVeloOuter = 0;
-double filteredVeloInner = 0;
-double filteredCurrOuter = 0;
-double filteredCurrInner = 0;
 
 struct Motor {
   int16_t position;
@@ -87,6 +98,18 @@ struct Motor {
   */
 };
 
+enum MotorProfile{
+  MOTOR_BOTH_OFF, 
+  MOTOR_SIMPLIFIED_RANDOM, 
+  MOTOR_2D_CLINOSTAT, 
+  MOTOR_3D_CLINOSTAT,
+  MOTOR_IRRATIONAL,
+  MOTOR_CYCLOIDAL,
+  MOTOR_BRW
+}; 
+
+MotorProfile currentProfile = MOTOR_SIMPLIFIED_RANDOM;
+
 enum {
     CAN_PACKET_SET_DUTY = 0,
     CAN_PACKET_SET_CURRENT,
@@ -97,6 +120,7 @@ enum {
     CAN_PACKET_SET_POS_SPD
 } CAN_PACKET_ID;
 
+void setMotorProfile(MotorProfile profile);
 void printMotor(Motor m, char c = '?');
 void setVelocity(uint8_t controller_id, float velocity_rpm);
 void setCurrent(uint8_t controller_id, float current);
@@ -107,7 +131,7 @@ Motor motorOuter;
 
 Motor motors[2] = {motorInner, motorOuter}; // This is creating copies, should fix
 
-char mode = 'm';
+char mode = ' ';
 
 // for CAN recieve
 uint32_t id;
@@ -139,6 +163,13 @@ double Kpouter=0.04, Kiouter=0.0001, Kdouter=0;
 double Kpinner=0.02, Kiinner=0.001, Kdinner=0;
 PID outerPID(&outer_velocity_reading, &outer_pid_output, &outer_velocity_desired, Kpouter, Kiouter, Kdouter, DIRECT); // input, output, setpoint
 PID innerPID(&inner_velocity_reading, &inner_pid_output, &inner_velocity_desired, Kpinner, Kiinner, Kdinner, DIRECT); // input, output, setpoint 
+
+/* Low Pass Filter Variables for PID Input and Output */
+const float alpha = 0.025; // Smoothing factor (adjust as needed)
+double filteredVeloOuter = 0;
+double filteredVeloInner = 0;
+double filteredCurrOuter = 0;
+double filteredCurrInner = 0;
 
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
@@ -191,11 +222,11 @@ const uint8_t can_test[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
 void setup() {
   outerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
   outerPID.SetMode(AUTOMATIC);
-  outerPID.SetSampleTime(1); // sets the frequency, in Milliseconds with which the PID calculation is performed
+  outerPID.SetSampleTime(5); // sets the frequency, in Milliseconds with which the PID calculation is performed
   
   innerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
   innerPID.SetMode(AUTOMATIC);
-  innerPID.SetSampleTime(1); // sets the frequency, in Milliseconds with which the PID calculation is performed
+  innerPID.SetSampleTime(5); // sets the frequency, in Milliseconds with which the PID calculation is performed
 
   Serial.begin(115200);
 
@@ -269,9 +300,48 @@ void loop() {
   /* read in commands from serial monitor */
   if(Serial.available()){
     char inChar = Serial.read();
+    // if we are in idle mode, then we can change algorithms
+    if (mode == ' ') {
+      switch (inChar) {
+        case '0':
+          setMotorProfile(MOTOR_BOTH_OFF);
+          Serial.println("Both off");
+          break;
+        case '1':
+          setMotorProfile(MOTOR_SIMPLIFIED_RANDOM);
+          Serial.println("srand");
+          break;
+        case '2':
+          setMotorProfile(MOTOR_2D_CLINOSTAT);
+          Serial.println("2d");
+          break;
+        case '3':
+          setMotorProfile(MOTOR_3D_CLINOSTAT);
+          Serial.println("3d");
+          break;
+        case '4':
+          setMotorProfile(MOTOR_IRRATIONAL);
+          Serial.println("irra");
+          break;
+        case '5':
+          setMotorProfile(MOTOR_CYCLOIDAL);
+          Serial.println("cyc");
+          break;
+        case '6':
+          setMotorProfile(MOTOR_BRW);
+          break;
+        // IGNORE NEWLINES so they don't trigger "default"
+        case '\r': 
+        case '\n':
+          break;
+        default :
+          setMotorProfile(currentProfile);
+          Serial.println("default");
+          break;
+      }
+    }
     if(inChar == 'a'){
       mode = 'a';
-      
       /* PID reset */
       outerPID.SetOutputLimits(0.0, 1.0);  // Forces minimum up to 0.0
       outerPID.SetOutputLimits(-1.0, 0.0);  // Forces maximum down to 0.0
@@ -283,7 +353,6 @@ void loop() {
       mode = ' ';
       setCurrent(0x64, 0);
       setCurrent(0x0A, 0);
-
       /* PID reset */
       outerPID.SetOutputLimits(0.0, 1.0);  // Forces minimum up to 0.0
       outerPID.SetOutputLimits(-1.0, 0.0);  // Forces maximum down to 0.0
@@ -309,27 +378,61 @@ void loop() {
 
   /* begin running the algorithm */
   if(mode == 'a'){
-    elapsed_time_sBRW = current_time - prev_time_sBRW;
-    if(elapsed_time_sBRW >= changeDT_sBRW){
-      prev_time_sBRW = current_time;
-      heading += (random(65536)/65536.0) * ANGLE_OF_ATTACK - (ANGLE_OF_ATTACK/2);
-      // double heading_rad = atan2(3.14159265358979,exp(1));
-      double heading_rad = heading * 3.14159 / 180;
+    if (currentProfile == MOTOR_SIMPLIFIED_RANDOM) {
+      elapsed_time_sBRW = current_time - prev_time_sBRW;
+      if(elapsed_time_sBRW >= changeDT_sBRW){
+        prev_time_sBRW = current_time;
+        heading += (random(65536)/65536.0) * ANGLE_OF_ATTACK - (ANGLE_OF_ATTACK/2);
+        double heading_rad = heading * 3.14159 / 180;
 
-      inner_velocity_desired = sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO; // eRPM pregearbox
-      outer_velocity_desired = cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO;
-
-      // inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
-      // outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
-      
-      digitalWrite(LED_PIN, HIGH);
-    }else{
-      digitalWrite(LED_PIN, LOW);
+        inner_velocity_desired = cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO; // eRPM pregearbox
+        outer_velocity_desired = sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO;
+        
+        digitalWrite(LED_PIN, HIGH);
+      }else{
+        digitalWrite(LED_PIN, LOW);
+      }
     }
 
+    else if(currentProfile == MOTOR_2D_CLINOSTAT) {
+      inner_velocity_desired = 0;                         // eRPM pregearbox
+      outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
+    }
+
+    else if(currentProfile == MOTOR_3D_CLINOSTAT) {
+      inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO; // eRPM pregearbox
+      outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
+    }
+
+    else if(currentProfile == MOTOR_BOTH_OFF) {
+      inner_velocity_desired = 0; // eRPM pregearbox
+      outer_velocity_desired = 0;
+    }
+
+    else if(currentProfile == MOTOR_IRRATIONAL) {
+      double heading_rad = atan2(3.14159265358979,exp(1));
+      inner_velocity_desired = cos(heading_rad)*MAX_VELO_RPM*GEAR_RATIO; // eRPM pregearbox
+      outer_velocity_desired = sin(heading_rad)*MAX_VELO_RPM*GEAR_RATIO;
+    } 
+    
+    else if(currentProfile == MOTOR_CYCLOIDAL) {
+      int32_t elapsed_time_ms = millis();
+      int32_t curr_cycle_time = elapsed_time_ms % CYCLOIDAL_TIME_PER_ROTATION;
+      velo_angle = 2 * PI * (double)(curr_cycle_time) / CYCLOIDAL_TIME_PER_ROTATION + PI;
+      double velo_angle_rad = velo_angle * 3.14159 / 180;
+      inner_velocity_desired = cos(velo_angle_rad)*MAX_VELO_RPM*GEAR_RATIO; // eRPM pregearbox
+      outer_velocity_desired = sin(velo_angle_rad)*MAX_VELO_RPM*GEAR_RATIO;
+    }
+    
+    else {
+      inner_velocity_desired = 0; // eRPM pregearbox
+      outer_velocity_desired = 0;
+    }
+    
     // sending is seperate from calculating speeds, for PID reasons
     elapsed_time_send = current_time - prev_time_send;
     if (elapsed_time_send >= send_interval) {
+
       prev_time_send = current_time;
       inner_velocity_reading = motors[0].speed * 10.0f; // eRPM pregearbox
       outer_velocity_reading = motors[1].speed * 10.0f;
@@ -355,7 +458,6 @@ void loop() {
       setCurrent(0x0A, outer_pid_output); // using outerPID
       setCurrent(0x64, inner_pid_output); // using innerPID
     }
-
   }
 
   /* Limit frequency of prints */
@@ -416,11 +518,11 @@ void setVelocity(uint8_t controller_id, float velocity_rpm){
 // The current value is of int32 type, and the values -60000 to 60000 represent -60 to 60 A
 void setCurrent(uint8_t controller_id, float current) {
     // Clamp for safety (for initial tests)
-    if (current > 5.0) {
-      current = 5.0;
+    if (current > 3.0) {
+      current = 3.0;
     }
-    if (current < -5.0) {
-      current = -5.0;
+    if (current < -3.0) {
+      current = -3.0;
     }
 
     int32_t send_index = 0;
@@ -458,6 +560,11 @@ void getFeedback(){
     motors[1].temp = data[6];
     motors[1].error_code = data[7];
   }
+}
+
+// set a desired profile
+void setMotorProfile(MotorProfile profile) {
+  currentProfile = profile;
 }
 
 // For AS5600 PWM reading
