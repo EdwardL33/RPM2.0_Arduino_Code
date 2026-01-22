@@ -57,7 +57,7 @@ RF24 radio(CE_PIN, CSN_PIN);
 
 int PWMpin = 5;  // connect AS5600 OUT pin here
 
-#define MAX_VELO_RPM_MECHANICAL 10 // change this for max RPM
+#define MAX_VELO_RPM_MECHANICAL 5 // change this for max RPM
 #define POLE_PAIRS 14
 #define MAX_VELO_RPM MAX_VELO_RPM_MECHANICAL*POLE_PAIRS // desired electrical RPM to be sent (post-gearbox);
 #define GEAR_RATIO 6
@@ -77,7 +77,7 @@ struct can_frame canMsg1;
 #define CAN_CS_PIN 53
 MCP2515 mcp2515(CAN_CS_PIN);
 
-#define MAX_CURRENT_AMPS 3.0 // rated working amps
+#define MAX_CURRENT_AMPS 4.0 // rated working amps
 
 struct Motor {
   int16_t position;
@@ -147,7 +147,7 @@ uint32_t prev_time_sBRW = 0;
 uint32_t prev_time_send = 0;
 uint32_t prev_time_print = 0;
 int changeDT_sBRW = 300;
-int send_interval = 1;
+int send_interval = 25;
 int print_interval = 50;
 
 /* Current Control PID variables */
@@ -159,8 +159,8 @@ double outer_velocity_reading = 0;
 double outer_pid_output = 0;
 
 // Specify the links and initial tuning parameters
-double Kpouter=0.04, Kiouter=0.0001, Kdouter=0;
-double Kpinner=0.02, Kiinner=0.001, Kdinner=0;
+double Kpouter=0.03, Kiouter=0.001, Kdouter=0;
+double Kpinner=0.02, Kiinner=0.01, Kdinner=0;
 PID outerPID(&outer_velocity_reading, &outer_pid_output, &outer_velocity_desired, Kpouter, Kiouter, Kdouter, DIRECT); // input, output, setpoint
 PID innerPID(&inner_velocity_reading, &inner_pid_output, &inner_velocity_desired, Kpinner, Kiinner, Kdinner, DIRECT); // input, output, setpoint 
 
@@ -222,7 +222,7 @@ const uint8_t can_test[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
 void setup() {
   outerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
   outerPID.SetMode(AUTOMATIC);
-  outerPID.SetSampleTime(5); // sets the frequency, in Milliseconds with which the PID calculation is performed
+  outerPID.SetSampleTime(25); // sets the frequency, in Milliseconds with which the PID calculation is performed
   
   innerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
   innerPID.SetMode(AUTOMATIC);
@@ -445,6 +445,29 @@ void loop() {
 
       outerPID.Compute(); 
       innerPID.Compute();
+      //       // // --- PROFILER START ---
+      // static unsigned long profileLastTime = 0;
+      // static long profileCount = 0;
+
+      // profileCount++;
+
+      // // Update every 1000ms (1 second)
+      // if (millis() - profileLastTime >= 1000) {
+      //     // Calculate frequency
+      //     float loopFreq = (float)profileCount; 
+      //     // Calculate average period in microseconds
+      //     float loopPeriod = 1000000.0 / loopFreq; 
+
+      //     Serial.print("Loop Freq: ");
+      //     Serial.print(loopFreq);
+      //     Serial.print(" Hz  |  Avg Period: ");
+      //     Serial.print(loopPeriod);
+      //     Serial.println(" us");
+
+      //     profileCount = 0;
+      //     profileLastTime = millis();
+      // }
+      // // // --- PROFILER END ---
 
       filteredCurrOuter = alpha * outer_pid_output + (1-alpha) * filteredCurrOuter;
       filteredCurrInner = alpha * inner_pid_output + (1-alpha) * filteredCurrInner;
@@ -466,9 +489,13 @@ void loop() {
     prev_time_print = current_time;
     float outer_angle = (float)((motors[1].position)*0.1f);
     float inner_angle = (float)((motors[0].position)*0.1f);
+
+    /* print mechanical RPM */
     // Serial.print((motors[0].speed * 10.0f)/(14.0f * 6));
     // Serial.print(" ");
     // Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
+
+    /* print all values */
     Serial.print(current_time);
     Serial.print(" ");
     Serial.print(motors[1].speed * 10.0f); // raw reading
@@ -490,6 +517,17 @@ void loop() {
     Serial.print(inner_pid_output); // commanded current
     Serial.print(" ");
     Serial.println((motors[0].current * 0.01f));
+
+    /* print readings and setpoints */
+    // Serial.print(outer_velocity_reading); // filtered reading
+    // Serial.print(",");
+    // Serial.print(outer_velocity_desired);
+    // Serial.print(",");
+    // Serial.print(inner_velocity_reading); // filtered reading
+    // Serial.print(",");
+    // Serial.println(inner_velocity_desired);
+
+
   }
   // delay(1);
 }
@@ -518,11 +556,11 @@ void setVelocity(uint8_t controller_id, float velocity_rpm){
 // The current value is of int32 type, and the values -60000 to 60000 represent -60 to 60 A
 void setCurrent(uint8_t controller_id, float current) {
     // Clamp for safety (for initial tests)
-    if (current > 3.0) {
-      current = 3.0;
+    if (current > 4.0) {
+      current = 4.0;
     }
-    if (current < -3.0) {
-      current = -3.0;
+    if (current < -4.0) {
+      current = -4.0;
     }
 
     int32_t send_index = 0;
