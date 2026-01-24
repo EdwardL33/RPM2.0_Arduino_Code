@@ -147,7 +147,9 @@ uint32_t prev_time_sBRW = 0;
 uint32_t prev_time_send = 0;
 uint32_t prev_time_print = 0;
 int changeDT_sBRW = 300;
-int send_interval = 25;
+
+/* unblocking timers */
+int send_interval = 10;
 int print_interval = 50;
 
 /* Current Control PID variables */
@@ -159,8 +161,8 @@ double outer_velocity_reading = 0;
 double outer_pid_output = 0;
 
 // Specify the links and initial tuning parameters
-double Kpouter=0.03, Kiouter=0.001, Kdouter=0;
-double Kpinner=0.02, Kiinner=0.01, Kdinner=0;
+double Kpouter=0.045, Kiouter=0.001, Kdouter=0;
+double Kpinner=0.025, Kiinner=0.001, Kdinner=0;
 PID outerPID(&outer_velocity_reading, &outer_pid_output, &outer_velocity_desired, Kpouter, Kiouter, Kdouter, DIRECT); // input, output, setpoint
 PID innerPID(&inner_velocity_reading, &inner_pid_output, &inner_velocity_desired, Kpinner, Kiinner, Kdinner, DIRECT); // input, output, setpoint 
 
@@ -222,11 +224,11 @@ const uint8_t can_test[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
 void setup() {
   outerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
   outerPID.SetMode(AUTOMATIC);
-  outerPID.SetSampleTime(25); // sets the frequency, in Milliseconds with which the PID calculation is performed
+  outerPID.SetSampleTime(10); // sets the frequency, in Milliseconds with which the PID calculation is performed
   
   innerPID.SetOutputLimits(-MAX_CURRENT_AMPS, MAX_CURRENT_AMPS);
   innerPID.SetMode(AUTOMATIC);
-  innerPID.SetSampleTime(5); // sets the frequency, in Milliseconds with which the PID calculation is performed
+  innerPID.SetSampleTime(10); // sets the frequency, in Milliseconds with which the PID calculation is performed
 
   Serial.begin(115200);
 
@@ -395,8 +397,10 @@ void loop() {
     }
 
     else if(currentProfile == MOTOR_2D_CLINOSTAT) {
-      inner_velocity_desired = 0;                         // eRPM pregearbox
-      outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
+      // inner_velocity_desired = 0;                         // eRPM pregearbox
+      // outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
+      inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;                         // eRPM pregearbox
+      outer_velocity_desired = 0;
     }
 
     else if(currentProfile == MOTOR_3D_CLINOSTAT) {
