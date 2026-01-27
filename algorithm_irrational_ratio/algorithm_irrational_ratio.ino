@@ -263,6 +263,13 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
 
   randomSeed(SEED);
+
+  Serial.println("Standard Operating Procedure:");
+  Serial.println("The default profile is MOTOR_SIMPLIFIED_RANDOM");
+  Serial.println("If you want to change the profile, just enter the number corresponding to the profile you desire into the serial monitor");
+  Serial.println("  0 - MOTOR_BOTH_OFF");         
+  Serial.println("  1 - MOTOR_SIMPLIFIED_RANDOM,\n  2 - MOTOR_2D_CLINOSTAT,\n  3 - MOTOR_3D_CLINOSTAT,\n  4 - MOTOR_IRRATIONAL,\n  5 - MOTOR_CYCLOIDAL,\n  6 - MOTOR_BRW");
+  Serial.println("Enter a to start your selected profile\nEnter r to end the profile\nYou can only switch profiles once you've ended your current profile\nFor best practice please wait for the motors to settle before starting a profile");
 }
 
 
@@ -307,27 +314,27 @@ void loop() {
       switch (inChar) {
         case '0':
           setMotorProfile(MOTOR_BOTH_OFF);
-          Serial.println("Both off");
+          Serial.println("MOTOR_BOTH_OFF");
           break;
         case '1':
           setMotorProfile(MOTOR_SIMPLIFIED_RANDOM);
-          Serial.println("srand");
+          Serial.println("MOTOR_SIMPLIFIED_RANDOM");
           break;
         case '2':
           setMotorProfile(MOTOR_2D_CLINOSTAT);
-          Serial.println("2d");
+          Serial.println("MOTOR_2D_CLINOSTAT");
           break;
         case '3':
           setMotorProfile(MOTOR_3D_CLINOSTAT);
-          Serial.println("3d");
+          Serial.println("MOTOR_3D_CLINOSTAT");
           break;
         case '4':
           setMotorProfile(MOTOR_IRRATIONAL);
-          Serial.println("irra");
+          Serial.println("MOTOR_IRRATIONAL");
           break;
         case '5':
           setMotorProfile(MOTOR_CYCLOIDAL);
-          Serial.println("cyc");
+          Serial.println("MOTOR_CYCLOIDAL");
           break;
         case '6':
           setMotorProfile(MOTOR_BRW);
@@ -500,27 +507,27 @@ void loop() {
     // Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
 
     /* print all values */
-    Serial.print(current_time);
-    Serial.print(" ");
-    Serial.print(motors[1].speed * 10.0f); // raw reading
-    Serial.print(" ");
-    Serial.print(outer_velocity_reading); // filtered reading
-    Serial.print(" ");
-    Serial.print(outer_velocity_desired);
-    Serial.print(" ");
-    Serial.print(outer_pid_output); // commanded current
-    Serial.print(" ");
-    Serial.print((motors[1].current * 0.01f));
-    Serial.print(" | ");
-    Serial.print(motors[0].speed * 10.0f); // raw reading
-    Serial.print(" ");
-    Serial.print(inner_velocity_reading); // filtered reading
-    Serial.print(" ");
-    Serial.print(inner_velocity_desired);
-    Serial.print(" ");
-    Serial.print(inner_pid_output); // commanded current
-    Serial.print(" ");
-    Serial.println((motors[0].current * 0.01f));
+    // Serial.print(current_time);
+    // Serial.print(" ");
+    // Serial.print(motors[1].speed * 10.0f); // raw reading
+    // Serial.print(" ");
+    // Serial.print(outer_velocity_reading); // filtered reading
+    // Serial.print(" ");
+    // Serial.print(outer_velocity_desired);
+    // Serial.print(" ");
+    // Serial.print(outer_pid_output); // commanded current
+    // Serial.print(" ");
+    // Serial.print((motors[1].current * 0.01f));
+    // Serial.print(" | ");
+    // Serial.print(motors[0].speed * 10.0f); // raw reading
+    // Serial.print(" ");
+    // Serial.print(inner_velocity_reading); // filtered reading
+    // Serial.print(" ");
+    // Serial.print(inner_velocity_desired);
+    // Serial.print(" ");
+    // Serial.print(inner_pid_output); // commanded current
+    // Serial.print(" ");
+    // Serial.println((motors[0].current * 0.01f));
 
     /* print readings and setpoints */
     // Serial.print(outer_velocity_reading); // filtered reading
