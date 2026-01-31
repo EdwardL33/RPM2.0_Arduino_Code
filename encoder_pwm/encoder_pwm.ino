@@ -6,9 +6,16 @@
 // 1 for angle
 // 0 for ticks
 #define UNITS 0
-
-int PWMpin = 5;  // connect AS5600 OUT pin here
+#define WINDOW 50
+int PWMpin = 7;  // connect AS5600 OUT pin here
+int GPOpin = 4;  // connect GPO pin here
+int AnalogInpin = A0;
+int sensorValue = 0;
 AS5600 as5600;
+
+uint16_t history[WINDOW] = {0}; // initialize history array
+int i = 0; // index for inserting into array
+
 void setup()
 {
   Serial.begin(115200);
@@ -19,6 +26,7 @@ void setup()
   Serial.println();
 
   pinMode(PWMpin, INPUT);
+  pinMode(GPOpin, INPUT_PULLUP);
 
   Wire.begin();
 
@@ -33,14 +41,21 @@ void setup()
 
   // Set to PWM mode
   as5600.setOutputMode(AS5600_OUTMODE_PWM);
-
-  // Optional: burn to EEPROM (only 3 times max!)
-  // as5600.burnSetting();
+  as5600.setPWMFrequency(AS5600_PWM_920);
 
   Serial.println("AS5600 set to PWM mode.");
   mode = as5600.getOutputMode();
   Serial.print("Current output mode: ");
   Serial.println(mode);
+  Serial.print("freq: ");
+  Serial.println(as5600.getPWMFrequency());
+  // as5600.setSlowFilter(1);
+  Serial.print("filterslow: ");
+  Serial.println(as5600.getSlowFilter());
+  // as5600.setFastFilter(7);
+  Serial.print("filterfast: ");
+  Serial.println(as5600.getFastFilter());
+  delay(2000);
 }
 
 float measureAngle()
@@ -97,8 +112,20 @@ uint16_t measureTicks()
 }
 
 
+uint16_t getAvgTicks() {
+  long sum = 0;
+  for (int i = 0; i < WINDOW; i++) {
+    sum += history[i]; // Your original PWM measurement function
+  }
+
+  return (uint16_t)(sum / WINDOW);
+}
+
 void loop()
-{
+{ 
+  sensorValue = analogRead(AnalogInpin);
+  Serial.println(sensorValue);
+
   #if UNITS
     float angle = measureAngle();
     if (angle >= 0.0)
@@ -107,28 +134,42 @@ void loop()
       Serial.println("PWM signal not detected");
     }
   #else 
-    uint16_t ticks = measureTicks();
-    if (ticks != 0xFFFF)
-      Serial.println(ticks);  // print 12-bit value
-    else
-      Serial.println("PWM signal not detected");
+
+    // uint16_t ticks = measureTicks();
+    
+    // i %= WINDOW; // i is only between 0 and 10
+    // history[i] = ticks; //override ticks with most up to date value
+    // i++;
+
+    // if (ticks != 0xFFFF) {
+    //   // Serial.print(ticks);  // print 12-bit value
+    //   // Serial.print(" ");
+    //   // if (i == WINDOW) {
+    //   //   Serial.println(getAvgTicks());
+    //   // } else {
+    //   //   Serial.println("");
+    //   // }
+
+    // }
+    // else{ 
+    //   // Serial.println("PWM signal not detected");
+    // }
   #endif
 
+  // uint8_t magnetStatus = as5600.detectMagnet();
 
-  uint8_t magnetStatus = as5600.detectMagnet();
+  // Serial.print("Status: ");
+  // if (magnetStatus) {
+  //   Serial.println("Magnet Detected! :)");
+  // } else if (magnetStatus & as5600.magnetTooWeak()) {
+  //   Serial.println("Magnet too weak (move it closer).");
+  // } else if (magnetStatus & as5600.magnetTooStrong()) {
+  //   Serial.println("Magnet too strong (move it away).");
+  // } else {
+  //   Serial.println("No Magnet Detected. :(");
+  // }
 
-  Serial.print("Status: ");
-  if (magnetStatus) {
-    Serial.println("Magnet Detected! :)");
-  } else if (magnetStatus & as5600.magnetTooWeak()) {
-    Serial.println("Magnet too weak (move it closer).");
-  } else if (magnetStatus & as5600.magnetTooStrong()) {
-    Serial.println("Magnet too strong (move it away).");
-  } else {
-    Serial.println("No Magnet Detected. :(");
-  }
-
-  delay(1); 
+  delay(2); 
 }
 
 

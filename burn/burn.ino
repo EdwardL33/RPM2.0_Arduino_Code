@@ -2,7 +2,7 @@
 
 // Set this to 1 ONLY when you are absolutely sure you want to permanently
 // burn the settings into the sensor's OTP memory.
-#define BURN_ENABLED 0
+#define BURN_ENABLED 1
 
 // AS5600 I2C Address
 const int AS5600_ADDR = 0x36;
@@ -13,9 +13,9 @@ const int CONF_REG_L = 0x08;
 const int BURN_REG   = 0xFF;
 
 // Configuration bytes based on the example settings above
-// CONF_L (0x08): PWMF=11, OUTS=10, HYST=01, PM=00   -> 0b11100100 -> 0xE4
+// CONF_L (0x08): PWMF=11, OUTS=00, HYST=01, PM=00   -> 0b11000100 -> 0xC4
 // CONF_H (0x07):  WD=0, FTH=000, SF=00-> 0b00000000 -> 0x00
-const byte config_l = 0xE4;
+const byte config_l = 0xC4;
 const byte config_h = 0x00;
 
 void setup() {
