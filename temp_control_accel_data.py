@@ -6,7 +6,6 @@ from Phidget22.Devices.Spatial import *
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from datetime import datetime
-import numpy as np
 import time
 import csv
 import sys
