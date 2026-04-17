@@ -60,7 +60,7 @@ RF24 radio(CE_PIN, CSN_PIN);
 
 int PWMpin = 5;  // connect AS5600 OUT pin here
 
-#define MAX_VELO_RPM_MECHANICAL 5  // change this for max RPM
+#define MAX_VELO_RPM_MECHANICAL 15  // change this for max RPM
 #define POLE_PAIRS 14
 #define MAX_VELO_RPM MAX_VELO_RPM_MECHANICAL *POLE_PAIRS  // desired electrical RPM to be sent (post-gearbox);
 #define GEAR_RATIO 6
@@ -283,11 +283,23 @@ void loop() {
   // grab inner angle
   if (radio.available()) {
     radio.read(&payload, sizeof(payload));
-    inner_angle_deg = ((4095.0 - payload[0])/ 4095.0) * 360;
+    inner_angle_deg = (((4095.0 - payload[0]) / 4095.0) * 360.0) - 275.96;
+
+    if (inner_angle_deg < 0) {
+      inner_angle_deg += 360.0;
+    } else if (inner_angle_deg >= 360.0) {
+        inner_angle_deg -= 360.0;
+    }
   }
 
   // grab outer angle
-  outer_angle_deg = ((4095.0 - as5600.readAngle())/ 4095.0) * 360;
+  outer_angle_deg = (((4095.0 - as5600.readAngle())/ 4095.0) * 360) - 253.54;
+
+  if (outer_angle_deg < 0) {
+    outer_angle_deg += 360.0;
+  } else if (outer_angle_deg >= 360.0) {
+      outer_angle_deg -= 360.0;
+  }
 
   uint32_t current_time = millis();
 
