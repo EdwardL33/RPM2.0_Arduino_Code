@@ -153,7 +153,7 @@ int changeDT_sBRW = 1000;
 
 /* unblocking timers */
 int send_interval = 5;
-int print_interval = 50;
+int print_interval = 20;
 
 /* Motor Velocity Variables */
 double inner_velocity_desired = 0;
@@ -164,9 +164,6 @@ double outer_velocity_reading = 0;
 /* Acceleration Ramp Variables*/
 float inner_velo_stepped = 0;
 float outer_velo_stepped = 0;
-
-/* feedforward variables */
-float final_outer_command = 0;
 
 
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
@@ -252,8 +249,10 @@ void setup() {
     Serial.println("radio good");
   }
   radio.setPALevel(RF24_PA_LOW);
+  radio.setDataRate(RF24_250KBPS);
   radio.setPayloadSize(sizeof(payload));
   radio.openReadingPipe(1, address);
+  radio.setAutoAck(false);
   radio.startListening();
   
 
@@ -395,10 +394,10 @@ void loop() {
     }
 
     else if (currentProfile == MOTOR_2D_CLINOSTAT) {
-      inner_velocity_desired = 0;                         // eRPM pregearbox
-      outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
-      // inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;  // eRPM pregearbox
-      // outer_velocity_desired = 0;
+      // inner_velocity_desired = 0;                         // eRPM pregearbox
+      // outer_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;
+      inner_velocity_desired = MAX_VELO_RPM * GEAR_RATIO;  // eRPM pregearbox
+      outer_velocity_desired = 0;
     }
 
     else if (currentProfile == MOTOR_3D_CLINOSTAT) {
@@ -436,26 +435,14 @@ void loop() {
     if (elapsed_time_send >= send_interval) {
 
       prev_time_send = current_time;
-      inner_velocity_reading = motors[0].speed * 10.0f;  // eRPM pregearbox
-      outer_velocity_reading = motors[1].speed * 10.0f;
 
       inner_velo_stepped = applyRamp(inner_velo_stepped, inner_velocity_desired, MAX_ACCEL_ERPM_S, elapsed_time_send);
       outer_velo_stepped = applyRamp(outer_velo_stepped, outer_velocity_desired, MAX_ACCEL_ERPM_S, elapsed_time_send);
-
-      // feedforward attempt
-      final_outer_command = outer_velo_stepped;
-      if (outer_velo_stepped > 300) {
-        float A = 20.0f; // at 420 RPM (5RPM postgearbox)
-        float phi = 0;
-        float outer_feedforward = A * sin(3.0f *outer_angle_deg*(PI/180.0f) + phi);
-        final_outer_command += outer_feedforward;
-      }
 
       // setVelocity(0x68, inner_velocity_desired);
       // setVelocity(0x0A, outer_velocity_desired);
       setVelocity(0x68, inner_velo_stepped);
       setVelocity(0x0A, outer_velo_stepped);
-      // setVelocity(0x0A, final_outer_command);
     }
   }
 
@@ -463,8 +450,15 @@ void loop() {
   elapsed_time_print = current_time - prev_time_print;
   if (elapsed_time_print >= print_interval) {
     prev_time_print = current_time;
+
+    /* Get Motor Angle and RPM*/
+    inner_velocity_reading = motors[0].speed * 10.0f;  // eRPM pregearbox
+    outer_velocity_reading = motors[1].speed * 10.0f;
+    float inner_velocity_reading_post_gearbox = (float)((motors[0].speed * 10.0f)/(14.0f * 6));
+    float outer_velocity_reading_post_gearbox = (float)((motors[1].speed * 10.0f)/(14.0f * 6));
     float outer_angle = (float)((motors[1].position) * 0.1f);
     float inner_angle = (float)((motors[0].position) * 0.1f);
+    float payload_vector_rpm = sqrt(sq(inner_velocity_reading_post_gearbox) + sq(outer_velocity_reading_post_gearbox));
 
     /* print mechanical RPM */
     // Serial.print((motors[0].speed * 10.0f)/(14.0f * 6));
@@ -472,41 +466,35 @@ void loop() {
     // Serial.print((motors[1].speed * 10.0f)/(14.0f * 6));
 
     // /* new prints for accel ramp check*/
-    Serial.print(current_time);
-    Serial.print(" ");
-    Serial.print(motors[1].speed * 10.0f);  // raw reading
-    Serial.print(" ");
-    Serial.print(outer_velo_stepped);
-    Serial.print(" ");
-    Serial.print(outer_velocity_desired);
-    Serial.print(" ");
-    Serial.print(outer_angle_deg);
-    Serial.print(" | ");
-    Serial.print(motors[0].speed * 10.0f);  // raw reading
-    Serial.print(" ");
-    Serial.print(inner_velo_stepped);
-    Serial.print(" ");
-    Serial.print(inner_velocity_desired);
-    Serial.print(" ");
-    Serial.println(inner_angle_deg);
-
-
-    // Print format for Arduino Serial Plotter
+    // Serial.print(current_time);
+    // Serial.print(" ");
+    // Serial.print(motors[1].speed * 10.0f);  // raw reading
+    // Serial.print(" ");
+    // Serial.print(outer_velo_stepped);
+    // Serial.print(" ");
     // Serial.print(outer_velocity_desired);
-    // Serial.print(",");
-    // Serial.print(motors[1].speed * 10.0f);
-    // Serial.print(",");
-    // Serial.println(final_outer_command); // println adds the \n
+    // Serial.print(" ");
+    // Serial.print(outer_angle_deg);
+    // Serial.print(" | ");
+    // Serial.print(motors[0].speed * 10.0f);  // raw reading
+    // Serial.print(" ");
+    // Serial.print(inner_velo_stepped);
+    // Serial.print(" ");
+    // Serial.print(inner_velocity_desired);
+    // Serial.print(" ");
+    // Serial.println(inner_angle_deg);
 
+    /* Use with temp_control_accel_data_RPM_Encoder.py */
+    Serial.print(outer_angle_deg); // outer
+    Serial.print(",");
+    Serial.print(inner_angle_deg); // inner
+    Serial.print(",");
+    Serial.print(outer_velocity_reading_post_gearbox);
+    Serial.print(",");
+    Serial.print(inner_velocity_reading_post_gearbox);
+    Serial.print(",");
+    Serial.println(payload_vector_rpm);
 
-    /* print readings and setpoints */
-    // Serial.print(outer_velocity_reading); // filtered reading
-    // Serial.print(",");
-    // Serial.print(outer_velocity_desired);
-    // Serial.print(",");
-    // Serial.print(inner_velocity_reading); // filtered reading
-    // Serial.print(",");
-    // Serial.println(inner_velocity_desired);
   }
   delay(1); // limit microcontroller speed
 }
